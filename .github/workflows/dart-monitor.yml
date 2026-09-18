@@ -1,16 +1,16 @@
-name: DART 중대재해 공시 모니터링
+﻿name: DART 以묐??ы빐 怨듭떆 紐⑤땲?곕쭅
 
 on:
   schedule:
-    # 매일 15:00 KST = 06:00 UTC (평일). GitHub cron은 수분~수십분 지연될 수 있음
+    # 留ㅼ씪 15:00 KST = 06:00 UTC (?됱씪). GitHub cron? ?섎텇~?섏떗遺?吏?곕맆 ???덉쓬
     - cron: "0 6 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "1이면 메일 미발송(테스트)"
+        description: "1?대㈃ 硫붿씪 誘몃컻???뚯뒪??"
         default: "0"
       lookback_days:
-        description: "조회 기간(일)"
+        description: "議고쉶 湲곌컙(??"
         default: "3"
 
 permissions:
@@ -22,42 +22,44 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
 
       - run: pip install -r requirements.txt
 
-      - name: 공시 확인 및 메일 발송
+      - name: 怨듭떆 ?뺤씤 諛?硫붿씪 諛쒖넚
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-          KEYWORDS: ${{ vars.KEYWORDS || '중대재해' }}
+          KEYWORDS: ${{ vars.KEYWORDS || '以묐??ы빐' }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '3' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
         run: python dart_monitor.py
 
-      - name: 발송 이력 저장
-        if: success()
+      - name: 諛쒖넚 ?대젰 ???        if: success()
         run: |
           git config user.name "dart-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
           git add state/sent.json || true
+          if [ -f out/preview.html ]; then
+            mkdir -p preview && cp out/preview.html preview/preview.html
+            git add preview/preview.html
+          fi
           if ! git diff --cached --quiet; then
             git commit -m "chore: update sent state $(date -u +%Y-%m-%dT%H:%MZ)"
             git push
           fi
 
-      - name: 테스트 미리보기 업로드
-        if: github.event.inputs.dry_run == '1'
-        uses: actions/upload-artifact@v4
+      - name: ?뚯뒪??誘몃━蹂닿린 ?낅줈??        if: github.event.inputs.dry_run == '1'
+        uses: actions/upload-artifact@v5
         with:
           name: preview
           path: out/preview.html
