@@ -45,15 +45,20 @@ LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 DOC_URL = "https://opendart.fss.or.kr/api/document.xml"
 VIEWER_URL = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
-# 제11-3-16조(중대재해 발생사실) 서식의 주요 항목. 표에서 라벨 매칭용.
+# 제11-3-16조(중대재해 발생사실) 서식 항목. (표시명, 표 라벨 셀에 포함되는 문자열들)
+# 실제 공시 표 구조: 1. 중대재해내용 > 발생 장소 / 발생 재해 내용 / 사망자 수 / 부상자 수,
+# 2. 중대재해 발생일자, 3. 고용노동부 보고일자, 4. 조치사항 및 향후대책, 5. 기타 투자판단과 관련한 중요사항
 SUMMARY_FIELDS = [
-    ("발생일시", ["발생일시", "발생 일시", "사고일시", "사고 일시"]),
-    ("발생장소", ["발생장소", "발생 장소", "사고장소"]),
-    ("사고내용", ["사고내용", "사고 내용", "재해내용", "발생경위", "재해 내용"]),
-    ("피해규모", ["피해규모", "피해 규모", "인명피해", "사망", "부상"]),
-    ("사고원인", ["사고원인", "사고 원인", "재해원인", "발생원인"]),
-    ("향후대책", ["향후대책", "향후 대책", "재발방지", "조치사항", "조치 사항"]),
-    ("회사영향", ["회사에 미치는 영향", "영향"]),
+    ("종속회사명", ["종속회사명", "자회사명"]),
+    ("정정사유", ["정정사유"]),
+    ("발생 장소", ["발생 장소", "발생장소", "사고장소"]),
+    ("발생 재해 내용", ["발생 재해 내용", "발생재해내용", "사고내용", "사고 내용", "재해 내용"]),
+    ("사망자 수", ["사망자 수", "사망자수"]),
+    ("부상자 수", ["부상자 수", "부상자수"]),
+    ("발생일자", ["발생일자", "발생 일자", "발생일시", "발생 일시"]),
+    ("고용노동부 보고일자", ["고용노동부 보고일자", "보고일자"]),
+    ("조치사항 및 향후대책", ["조치사항 및 향후대책", "향후대책", "향후 대책", "조치사항"]),
+    ("기타 중요사항", ["기타 투자판단", "기타 중요사항"]),
 ]
 
 CORP_CLS = {"Y": "유가", "K": "코스닥", "N": "코넥스", "E": "기타"}
@@ -172,14 +177,19 @@ def summarize(tables: list[list[list[str]]]) -> dict:
         for row in rows:
             if len(row) < 2:
                 continue
-            label = " ".join(row[:-1])
-            value = row[-1]
-            for key, aliases in SUMMARY_FIELDS:
-                if key in summary:
-                    continue
-                if any(a in label for a in aliases) and value != label:
-                    summary[key] = value
-                    break
+            # 라벨 셀 바로 오른쪽 셀을 값으로 사용
+            # 예) ["1. 중대재해내용", "발생 장소", "온산제련소 2공장"] -> 발생 장소 = 온산제련소 2공장
+            #     ["종속회사명", "한화솔루션㈜", "영문", "HANWHA ..."] -> 종속회사명 = 한화솔루션㈜
+            #     정정공시 ["4. 조치사항 및 향후대책", "정정전 값", "정정후 값"] -> 마지막 셀(정정후)
+            for i, cell in enumerate(row[:-1]):
+                for key, aliases in SUMMARY_FIELDS:
+                    if key in summary:
+                        continue
+                    if any(a in cell for a in aliases):
+                        value = row[-1] if len(row) - i == 3 and i == 0 else row[i + 1]
+                        if value and value != cell:
+                            summary[key] = value
+                        break
     return summary
 
 
@@ -213,7 +223,8 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
     td,th{border:1px solid #ddd;padding:6px 8px;vertical-align:top;font-size:13px}
     th{background:#f5f5f5;text-align:left;width:22%}
     .err{color:#a00}
-    details summary{cursor:pointer;color:#357;margin-top:8px}
+    .sub{color:#666;font-size:12px;margin-top:14px}
+    table.raw td{color:#555;font-size:12px}
     """
     parts = [f"<html><head><meta charset='utf-8'><style>{css}</style></head><body>"]
     parts.append("<h2>DART 중대재해 발생사실 공시 알림</h2>")
@@ -239,13 +250,12 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
                     parts.append(f"<tr><th>{esc(key)}</th><td>{esc(d.summary[key])}</td></tr>")
             parts.append("</table>")
         if d.tables:
-            parts.append("<details><summary>공시 표 전체 보기</summary>")
+            parts.append("<div class='sub'>공시 원문 표</div>")
             for rows in d.tables:
-                parts.append("<table>")
+                parts.append("<table class='raw'>")
                 for row in rows:
                     parts.append("<tr>" + "".join(f"<td>{esc(c)}</td>" for c in row) + "</tr>")
                 parts.append("</table>")
-            parts.append("</details>")
         parts.append("</div>")
     parts.append("<div class='meta'>본 메일은 OpenDART API 기반 자동 발송입니다.</div>")
     parts.append("</body></html>")
@@ -344,7 +354,7 @@ def main() -> int:
             corp_name=it.get("corp_name", ""),
             corp_cls=it.get("corp_cls", ""),
             stock_code=it.get("stock_code", ""),
-            report_nm=it.get("report_nm", ""),
+            report_nm=(it.get("report_nm") or "").strip(),
             flr_nm=it.get("flr_nm", ""),
         )
         enrich(api_key, d)
