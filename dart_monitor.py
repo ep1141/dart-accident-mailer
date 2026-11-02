@@ -76,10 +76,54 @@ class Disclosure:
     summary: dict = field(default_factory=dict)
     tables: list = field(default_factory=list)  # list[list[list[str]]]
     error: str | None = None
+    also_filed: list = field(default_factory=list)  # 같은 사고를 공시한 다른 회사(모회사 등)
 
     @property
     def url(self) -> str:
         return VIEWER_URL.format(rcept_no=self.rcept_no)
+
+    @property
+    def is_parent_filing(self) -> bool:
+        """모회사가 자회사·종속회사 사고를 대신 공시한 건인지."""
+        return any(k in self.report_nm for k in ("종속회사", "자회사"))
+
+    @property
+    def is_correction(self) -> bool:
+        return "정정" in self.report_nm
+
+    def content_key(self) -> str | None:
+        """같은 사고를 식별하는 키. 재해 내용이 없으면 None(중복 판단 안 함)."""
+        content = self.summary.get("발생 재해 내용") or ""
+        if not content:
+            return None
+        norm = re.sub(r"[\s\W_]+", "", content)[:80]
+        date = re.sub(r"\D", "", self.summary.get("발생일자") or "")
+        return f"{'C' if self.is_correction else 'O'}|{date}|{norm}"
+
+
+def dedupe_same_incident(items: list[Disclosure], sent_keys: set[str]) -> list[Disclosure]:
+    """자회사와 모회사가 같은 사고를 각각 공시한 경우 하나만 남긴다.
+    자회사 직접 공시를 우선하고, 나머지 공시 회사는 also_filed에 기록.
+    이미 발송한 사고(sent_keys)와 같은 건이면 제외."""
+    groups: dict[str, list[Disclosure]] = {}
+    kept: list[Disclosure] = []
+    for d in items:
+        key = d.content_key()
+        if key is None:
+            kept.append(d)
+        elif key in sent_keys:
+            print(f"    (중복 제외: 이미 발송한 사고) {d.corp_name} | {d.report_nm}")
+        else:
+            groups.setdefault(key, []).append(d)
+    for ds in groups.values():
+        ds.sort(key=lambda x: (x.is_parent_filing, x.rcept_no))
+        primary = ds[0]
+        for other in ds[1:]:
+            primary.also_filed.append(other)
+            print(f"    (중복 병합) {other.corp_name} | {other.report_nm} -> {primary.corp_name}")
+        kept.append(primary)
+    kept.sort(key=lambda x: (x.rcept_dt, x.rcept_no))
+    return kept
 
 
 def env(name: str, default: str | None = None, required: bool = False) -> str:
@@ -224,6 +268,7 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
     th{background:#f5f5f5;text-align:left;width:22%}
     .err{color:#a00}
     .sub{color:#666;font-size:12px;margin-top:14px}
+    .also{color:#666;font-size:12px;margin-top:4px}
     table.raw td{color:#555;font-size:12px}
     """
     parts = [f"<html><head><meta charset='utf-8'><style>{css}</style></head><body>"]
@@ -241,6 +286,11 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
             f"<div>{esc(d.report_nm)} · 제출인 {esc(d.flr_nm)} · "
             f"<a href='{d.url}'>DART 원문 보기</a></div>"
         )
+        if d.also_filed:
+            links = " · ".join(
+                f"<a href='{o.url}'>{esc(o.corp_name)}</a> ({esc(o.report_nm)})" for o in d.also_filed
+            )
+            parts.append(f"<div class='also'>같은 사고 공시: {links}</div>")
         if d.error:
             parts.append(f"<div class='err'>{esc(d.error)}</div>")
         if d.summary:
@@ -266,6 +316,8 @@ def render_text(items: list[Disclosure]) -> str:
     lines = ["DART 중대재해 발생사실 공시 알림", ""]
     for d in items:
         lines.append(f"[{d.rcept_dt}] {d.corp_name} - {d.report_nm}")
+        if d.also_filed:
+            lines.append("  같은 사고 공시: " + ", ".join(o.corp_name for o in d.also_filed))
         for key, _ in SUMMARY_FIELDS:
             if key in d.summary:
                 lines.append(f"  {key}: {d.summary[key]}")
@@ -299,20 +351,22 @@ def send_mail(subject: str, html_body: str, text_body: str) -> None:
 # ---------------------------------------------------------------- 상태
 
 
-def load_state(path: Path) -> set[str]:
+def load_state(path: Path) -> tuple[set[str], set[str]]:
+    """(발송한 공시번호, 발송한 사고 키) 반환."""
     if path.exists():
         try:
-            return set(json.loads(path.read_text(encoding="utf-8")).get("sent", []))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return set(data.get("sent", [])), set(data.get("keys", []))
         except json.JSONDecodeError:
-            return set()
-    return set()
+            pass
+    return set(), set()
 
 
-def save_state(path: Path, sent: set[str]) -> None:
+def save_state(path: Path, sent: set[str], keys: set[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # 최근 2000건만 유지
-    keep = sorted(sent)[-2000:]
-    path.write_text(json.dumps({"sent": keep}, ensure_ascii=False, indent=0), encoding="utf-8")
+    data = {"sent": sorted(sent)[-2000:], "keys": sorted(keys)[-2000:]}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
 
 
 # ---------------------------------------------------------------- main
@@ -338,7 +392,7 @@ def main() -> int:
     ]
     print(f"키워드 일치 {len(matched)}건")
 
-    sent = load_state(state_path)
+    sent, sent_keys = load_state(state_path)
     new_items = [it for it in matched if it["rcept_no"] not in sent]
     print(f"신규(미발송) {len(new_items)}건")
 
@@ -363,7 +417,17 @@ def main() -> int:
         if d.error:
             print(f"    ! {d.error}")
 
-    subject = f"[DART 중대재해] {now:%m/%d} 신규 {len(disclosures)}건 - " + ", ".join(
+    all_fetched = list(disclosures)
+    disclosures = dedupe_same_incident(disclosures, sent_keys)
+    print(f"중복 병합 후 {len(disclosures)}건")
+    if not disclosures:
+        print("발송할 신규 사고 없음(모두 기발송 사고의 중복 공시). 이력만 갱신합니다.")
+        if not dry_run:
+            sent.update(d.rcept_no for d in all_fetched)
+            save_state(state_path, sent, sent_keys)
+        return 0
+
+    subject =f"[DART 중대재해] {now:%m/%d} 신규 {len(disclosures)}건 - " + ", ".join(
         dict.fromkeys(d.corp_name for d in disclosures)
     )
     if len(subject) > 120:
@@ -380,8 +444,9 @@ def main() -> int:
     else:
         send_mail(subject, html_body, text_body)
         print(f"메일 발송 완료: {subject}")
-        sent.update(d.rcept_no for d in disclosures)
-        save_state(state_path, sent)
+        sent.update(d.rcept_no for d in all_fetched)
+        sent_keys.update(k for k in (d.content_key() for d in disclosures) if k)
+        save_state(state_path, sent, sent_keys)
     return 0
 
 
