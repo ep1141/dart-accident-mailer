@@ -2,13 +2,14 @@ name: DART 중대재해 공시 모니터링
 
 on:
   schedule:
-    # 매일 15:00 KST = 06:00 UTC (평일). GitHub cron은 수분~수십분 지연될 수 있음
-    - cron: "0 6 * * 1-5"
+    # 평일 09:00~18:00 KST 매시 정각 = 00:00~09:00 UTC 월~금.
+    # GitHub cron은 지연될 수 있으므로 아래 '실행 시간대 확인' 단계에서 KST 기준으로 다시 걸러냄.
+    - cron: "0 0-9 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:
         description: "1이면 메일 미발송(테스트)"
-        default: "0"
+        default: "1"
       lookback_days:
         description: "조회 기간(일)"
         default: "3"
@@ -24,16 +25,37 @@ jobs:
   run:
     runs-on: ubuntu-24.04
     steps:
+      - name: 실행 시간대 확인 (평일 09~18시 KST만 진행)
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "수동 실행: 시간대 제한 없이 진행"
+            echo "go=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          HOUR=$(TZ=Asia/Seoul date +%H | sed 's/^0//')
+          DOW=$(TZ=Asia/Seoul date +%u)   # 1=월 ... 7=일
+          echo "현재 KST $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') (요일 $DOW)"
+          if [ "$DOW" -ge 6 ] || [ "$HOUR" -lt 9 ] || [ "$HOUR" -gt 18 ]; then
+            echo "근무시간 외: 건너뜀"
+            echo "go=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v5
+        if: steps.gate.outputs.go == '1'
 
       - uses: actions/setup-python@v6
+        if: steps.gate.outputs.go == '1'
         with:
           python-version: "3.12"
           cache: pip
 
       - run: pip install -r requirements.txt
+        if: steps.gate.outputs.go == '1'
 
       - name: 공시 확인 및 메일 발송
+        if: steps.gate.outputs.go == '1'
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -45,10 +67,11 @@ jobs:
         run: python dart_monitor.py
 
       - name: 발송 이력 및 미리보기 저장
-        if: success()
+        if: steps.gate.outputs.go == '1' && success()
         run: |
           git config user.name "dart-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
+          git pull -q --rebase || true
           git add state/sent.json || true
           if [ -f out/preview.html ]; then
             mkdir -p preview && cp out/preview.html preview/preview.html
@@ -60,7 +83,7 @@ jobs:
           fi
 
       - name: 테스트 미리보기 업로드
-        if: github.event.inputs.dry_run == '1'
+        if: steps.gate.outputs.go == '1' && github.event.inputs.dry_run == '1'
         uses: actions/upload-artifact@v5
         with:
           name: preview
