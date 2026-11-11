@@ -428,7 +428,7 @@ def main() -> int:
             save_state(state_path, sent, sent_keys)
         return 0
 
-    subject =f"[DART 중대재해] {now:%m/%d} 신규 {len(disclosures)}건 - " + ", ".join(
+    subject = f"[CSO 중대재해 공유] {now:%m/%d} 신규 {len(disclosures)}건, " + ", ".join(
         dict.fromkeys(d.corp_name for d in disclosures)
     )
     if len(subject) > 120:
