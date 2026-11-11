@@ -30,6 +30,7 @@ import os
 import re
 import smtplib
 import sys
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -137,6 +138,24 @@ def env(name: str, default: str | None = None, required: bool = False) -> str:
 # ---------------------------------------------------------------- DART API
 
 
+def dart_get(url: str, params: dict, read_timeout: int = 60, attempts: int = 5) -> requests.Response:
+    """DART는 해외 클라우드(GitHub 러너)에서 접속이 느리거나 끊기는 경우가 있어 재시도한다."""
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            r = requests.get(url, params=params, timeout=(20, read_timeout))
+            if r.status_code >= 500:
+                raise requests.HTTPError(f"HTTP {r.status_code}")
+            return r
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+            last = e
+            wait = min(60, 5 * 2 ** (i - 1))
+            print(f"    DART 접속 재시도 {i}/{attempts} ({type(e).__name__}) - {wait}초 후")
+            if i < attempts:
+                time.sleep(wait)
+    raise last  # type: ignore[misc]
+
+
 def fetch_list(api_key: str, bgn_de: str, end_de: str) -> list[dict]:
     """기간 내 전체 공시 목록(전 기업, 전 유형)을 페이지 순회하며 수집."""
     items: list[dict] = []
@@ -149,7 +168,7 @@ def fetch_list(api_key: str, bgn_de: str, end_de: str) -> list[dict]:
             "page_no": page,
             "page_count": 100,
         }
-        r = requests.get(LIST_URL, params=params, timeout=30)
+        r = dart_get(LIST_URL, params)
         r.raise_for_status()
         data = r.json()
         status = data.get("status")
@@ -167,7 +186,7 @@ def fetch_list(api_key: str, bgn_de: str, end_de: str) -> list[dict]:
 
 def fetch_document_text(api_key: str, rcept_no: str) -> str:
     """공시 원본 zip을 받아 XML/HTML 본문 문자열로 반환."""
-    r = requests.get(DOC_URL, params={"crtfc_key": api_key, "rcept_no": rcept_no}, timeout=60)
+    r = dart_get(DOC_URL, {"crtfc_key": api_key, "rcept_no": rcept_no})
     r.raise_for_status()
     ctype = r.headers.get("Content-Type", "")
     if "json" in ctype or r.content[:1] == b"{":
@@ -559,7 +578,15 @@ def main() -> int:
     bgn_de = (now - timedelta(days=lookback)).strftime("%Y%m%d")
 
     print(f"[{now:%Y-%m-%d %H:%M}] 공시 조회 {bgn_de}~{end_de}, 키워드 {keywords}")
-    all_items = fetch_list(api_key, bgn_de, end_de)
+    try:
+        all_items = fetch_list(api_key, bgn_de, end_de)
+    except (requests.ConnectionError, requests.Timeout) as e:
+        # 예약 실행은 매시간 반복되므로, DART 접속 불가 시 실패 알림을 남발하지 않고 다음 실행에서 재시도한다.
+        print(f"DART 접속 실패: {e}")
+        if env("GITHUB_EVENT_NAME") == "schedule":
+            print("예약 실행이므로 정상 종료하고 다음 실행에서 재시도합니다.")
+            return 0
+        return 1
     print(f"전체 공시 {len(all_items)}건")
 
     matched = [
