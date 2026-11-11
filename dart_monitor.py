@@ -299,8 +299,9 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
                 if key in d.summary:
                     parts.append(f"<tr><th>{esc(key)}</th><td>{esc(d.summary[key])}</td></tr>")
             parts.append("</table>")
-        if d.tables:
-            parts.append("<div class='sub'>공시 원문 표</div>")
+        # 요약 표를 뽑지 못한 경우에만 원문 표를 대신 보여준다
+        if d.tables and not d.summary:
+            parts.append("<div class='sub'>요약 추출 실패 · 공시 원문 표</div>")
             for rows in d.tables:
                 parts.append("<table class='raw'>")
                 for row in rows:
