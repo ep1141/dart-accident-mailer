@@ -263,50 +263,128 @@ EN_LABELS = {
     "조치사항 및 향후대책": "Actions taken and future measures",
     "기타 중요사항": "Other important matters",
 }
-TRANSLATE_MODEL = "claude-haiku-4-5-20251001"
+
+# 번역 방식(위에서부터 사용 가능한 것을 순서대로 시도, 모두 실패하면 한글만 발송)
+#  1) Anthropic API    : ANTHROPIC_API_KEY 가 있을 때만 (유료, 선택)
+#  2) GitHub Models    : Actions의 GITHUB_TOKEN 으로 무료 사용 (워크플로우 permissions: models: read)
+#  3) Google 무료 엔드포인트 : 키 불필요, 비공식이라 최후 수단
+GH_MODELS_URL = "https://models.github.ai/inference/chat/completions"
+GH_MODEL = "openai/gpt-4o-mini"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+
+def _llm_prompt(payload: dict) -> str:
+    return (
+        "Translate the values of this Korean corporate disclosure about a serious industrial accident "
+        "into clear, neutral English. Keep keys unchanged, keep numbers and dates as-is, "
+        "romanize or use the official English name for company names, and do not add or omit facts. "
+        "Return only the JSON object.\n\n" + json.dumps(payload, ensure_ascii=False)
+    )
+
+
+def _parse_json_object(text: str) -> dict:
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        raise ValueError("번역 응답에서 JSON을 찾지 못함")
+    return json.loads(m.group(0))
+
+
+def _translate_anthropic(payload: dict) -> dict:
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": env("ANTHROPIC_API_KEY"),
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": env("TRANSLATE_MODEL", ANTHROPIC_MODEL),
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": _llm_prompt(payload)}],
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    return _parse_json_object("".join(b.get("text", "") for b in r.json().get("content", [])))
+
+
+def _translate_github_models(payload: dict) -> dict:
+    r = requests.post(
+        GH_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {env('GITHUB_TOKEN')}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": env("GH_MODEL", GH_MODEL),
+            "messages": [{"role": "user", "content": _llm_prompt(payload)}],
+            "temperature": 0,
+        },
+        timeout=90,
+    )
+    r.raise_for_status()
+    return _parse_json_object(r.json()["choices"][0]["message"]["content"])
+
+
+def _gtx(text: str) -> str:
+    """Google 무료 번역 엔드포인트(키 불필요). 긴 글은 1,500자 단위로 나눠 호출."""
+    chunks, cur = [], ""
+    for piece in re.split(r"(?<=[.!?\n])\s*", text):
+        if len(cur) + len(piece) > 1500 and cur:
+            chunks.append(cur)
+            cur = ""
+        cur += piece + " "
+    if cur.strip():
+        chunks.append(cur.strip())
+    out = []
+    for c in chunks:
+        r = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "ko", "tl": "en", "dt": "t", "q": c},
+            timeout=30,
+        )
+        r.raise_for_status()
+        out.append("".join(seg[0] for seg in r.json()[0] if seg and seg[0]))
+    return " ".join(out).strip()
+
+
+def _translate_google(payload: dict) -> dict:
+    def tr(v: str) -> str:
+        return _gtx(v) if re.search(r"[가-힣]", v or "") else v
+
+    return {
+        "corp_name": tr(payload["corp_name"]),
+        "report_nm": tr(payload["report_nm"]),
+        "fields": {k: tr(v) for k, v in payload["fields"].items()},
+    }
 
 
 def translate_disclosure(d: Disclosure) -> None:
-    """공시 요약을 영문으로 번역해 d.en에 저장. 키가 없거나 실패하면 조용히 건너뛴다(한글 메일만 발송)."""
-    api_key = env("ANTHROPIC_API_KEY")
-    if not api_key or not d.summary:
+    """공시 요약을 영문으로 번역해 d.en에 저장. 모두 실패하면 건너뛴다(한글 메일만 발송)."""
+    if not d.summary:
         return
     payload = {
         "corp_name": d.corp_name,
         "report_nm": d.report_nm,
         "fields": {k: v for k, v in d.summary.items() if k in EN_LABELS},
     }
-    prompt = (
-        "Translate the values of this Korean corporate disclosure about a serious industrial accident "
-        "into clear, neutral English. Keep keys unchanged, keep numbers and dates as-is, "
-        "romanize or use the official English name for company names, and do not add or omit facts. "
-        "Return only the JSON object.\n\n" + json.dumps(payload, ensure_ascii=False)
-    )
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": env("TRANSLATE_MODEL", TRANSLATE_MODEL),
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
-        m = re.search(r"\{.*\}", text, re.S)
-        if not m:
-            raise ValueError("번역 응답에서 JSON을 찾지 못함")
-        data = json.loads(m.group(0))
-        if isinstance(data.get("fields"), dict):
-            d.en = data
-    except Exception as e:  # noqa: BLE001
-        print(f"    ! 영문 번역 실패({d.corp_name}): {e}")
+    providers = []
+    if env("ANTHROPIC_API_KEY"):
+        providers.append(("Anthropic", _translate_anthropic))
+    if env("GITHUB_TOKEN"):
+        providers.append(("GitHub Models", _translate_github_models))
+    providers.append(("Google 무료", _translate_google))
+    for name, fn in providers:
+        try:
+            data = fn(payload)
+            if isinstance(data.get("fields"), dict) and data["fields"]:
+                d.en = data
+                print(f"    영문 번역 완료({name}): {d.corp_name}")
+                return
+        except Exception as e:  # noqa: BLE001
+            print(f"    ! 영문 번역 실패({name}, {d.corp_name}): {e}")
 
 
 # ---------------------------------------------------------------- 메일

@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  models: read
 
 concurrency:
   group: dart-monitor
@@ -61,6 +62,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KEYWORDS: ${{ vars.KEYWORDS || '중대재해' }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '3' }}
