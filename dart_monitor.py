@@ -595,6 +595,10 @@ def main() -> int:
     print(f"키워드 일치 {len(matched)}건")
 
     sent, sent_keys = load_state(state_path)
+    if dry_run:
+        # 테스트 모드: 발송 이력을 무시하고 조회된 전체를 미리보기로 만든다(이력은 저장하지 않음)
+        sent, sent_keys = set(), set()
+        print("DRY_RUN: 발송 이력을 무시하고 조회된 전체 건으로 미리보기를 만듭니다.")
     new_items = [it for it in matched if it["rcept_no"] not in sent]
     print(f"신규(미발송) {len(new_items)}건")
 
