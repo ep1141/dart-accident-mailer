@@ -77,6 +77,7 @@ class Disclosure:
     tables: list = field(default_factory=list)  # list[list[list[str]]]
     error: str | None = None
     also_filed: list = field(default_factory=list)  # 같은 사고를 공시한 다른 회사(모회사 등)
+    en: dict = field(default_factory=dict)  # 영문 번역 {"corp_name","report_nm","fields":{한글라벨: 영문값}}
 
     @property
     def url(self) -> str:
@@ -248,6 +249,66 @@ def enrich(api_key: str, d: Disclosure) -> None:
         d.error = f"원문 추출 실패: {e}"
 
 
+# ---------------------------------------------------------------- 영문 번역
+
+EN_LABELS = {
+    "종속회사명": "Subsidiary",
+    "정정사유": "Reason for correction",
+    "발생 장소": "Location",
+    "발생 재해 내용": "Description of accident",
+    "사망자 수": "Fatalities",
+    "부상자 수": "Injuries",
+    "발생일자": "Date of occurrence",
+    "고용노동부 보고일자": "Reported to Ministry of Employment and Labor",
+    "조치사항 및 향후대책": "Actions taken and future measures",
+    "기타 중요사항": "Other important matters",
+}
+TRANSLATE_MODEL = "claude-haiku-4-5-20251001"
+
+
+def translate_disclosure(d: Disclosure) -> None:
+    """공시 요약을 영문으로 번역해 d.en에 저장. 키가 없거나 실패하면 조용히 건너뛴다(한글 메일만 발송)."""
+    api_key = env("ANTHROPIC_API_KEY")
+    if not api_key or not d.summary:
+        return
+    payload = {
+        "corp_name": d.corp_name,
+        "report_nm": d.report_nm,
+        "fields": {k: v for k, v in d.summary.items() if k in EN_LABELS},
+    }
+    prompt = (
+        "Translate the values of this Korean corporate disclosure about a serious industrial accident "
+        "into clear, neutral English. Keep keys unchanged, keep numbers and dates as-is, "
+        "romanize or use the official English name for company names, and do not add or omit facts. "
+        "Return only the JSON object.\n\n" + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": env("TRANSLATE_MODEL", TRANSLATE_MODEL),
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            raise ValueError("번역 응답에서 JSON을 찾지 못함")
+        data = json.loads(m.group(0))
+        if isinstance(data.get("fields"), dict):
+            d.en = data
+    except Exception as e:  # noqa: BLE001
+        print(f"    ! 영문 번역 실패({d.corp_name}): {e}")
+
+
 # ---------------------------------------------------------------- 메일
 
 
@@ -309,6 +370,31 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
                 parts.append("</table>")
         parts.append("</div>")
     parts.append("<div class='meta'>본 메일은 OpenDART API 기반 자동 발송입니다.</div>")
+
+    # 영문 번역본 (번역에 성공한 건만)
+    en_items = [d for d in items if d.en]
+    if en_items:
+        parts.append("<hr style='border:0;border-top:2px solid #999;margin:28px 0 18px'>")
+        parts.append("<h2>Serious Accident Disclosure Alert (English)</h2>")
+        parts.append("<div class='meta'>Machine-translated from the Korean disclosure. "
+                     "Please refer to the original DART filing for accuracy.</div>")
+        for d in en_items:
+            parts.append("<div class='card'>")
+            parts.append(
+                f"<h3>{esc(d.en.get('corp_name') or d.corp_name)} "
+                f"<span class='tag'>{esc(d.rcept_dt)}</span></h3>"
+            )
+            parts.append(
+                f"<div>{esc(d.en.get('report_nm') or d.report_nm)} · "
+                f"<a href='{d.url}'>View original on DART</a></div>"
+            )
+            parts.append("<table>")
+            for key, _ in SUMMARY_FIELDS:
+                if key in d.en["fields"]:
+                    parts.append(
+                        f"<tr><th>{esc(EN_LABELS[key])}</th><td>{esc(str(d.en['fields'][key]))}</td></tr>"
+                    )
+            parts.append("</table></div>")
     parts.append("</body></html>")
     return "".join(parts)
 
@@ -324,6 +410,16 @@ def render_text(items: list[Disclosure]) -> str:
                 lines.append(f"  {key}: {d.summary[key]}")
         lines.append(f"  {d.url}")
         lines.append("")
+    en_items = [d for d in items if d.en]
+    if en_items:
+        lines += ["-" * 40, "Serious Accident Disclosure Alert (English, machine-translated)", ""]
+        for d in en_items:
+            lines.append(f"[{d.rcept_dt}] {d.en.get('corp_name') or d.corp_name} - {d.en.get('report_nm') or d.report_nm}")
+            for key, _ in SUMMARY_FIELDS:
+                if key in d.en["fields"]:
+                    lines.append(f"  {EN_LABELS[key]}: {d.en['fields'][key]}")
+            lines.append(f"  {d.url}")
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -433,6 +529,9 @@ def main() -> int:
     )
     if len(subject) > 120:
         subject = subject[:117] + "..."
+
+    for d in disclosures:
+        translate_disclosure(d)
 
     html_body = render_html(disclosures, now)
     text_body = render_text(disclosures)
