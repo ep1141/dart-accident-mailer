@@ -302,10 +302,39 @@ def _llm_prompt(payload: dict) -> str:
 
 
 def _parse_json_object(text: str) -> dict:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("번역 응답이 비어 있음")
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)  # 코드블록 표기 제거
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
-        raise ValueError("번역 응답에서 JSON을 찾지 못함")
+        raise ValueError(f"번역 응답에서 JSON을 찾지 못함: {text[:120]!r}")
     return json.loads(m.group(0))
+
+
+def _request_with_retry(method: str, url: str, attempts: int = 3, **kwargs) -> requests.Response:
+    """429(호출 제한)·5xx·빈 응답이면 대기 후 재시도. 성공 응답을 반환, 끝내 실패하면 예외."""
+    last = ""
+    for i in range(1, attempts + 1):
+        try:
+            r = requests.request(method, url, **kwargs)
+            if r.status_code == 429 or r.status_code >= 500:
+                retry_after = r.headers.get("Retry-After", "")
+                wait = int(retry_after) if retry_after.isdigit() else 5 * 3 ** (i - 1)
+                last = f"HTTP {r.status_code} {r.text[:100]!r}"
+                print(f"      번역 호출 재시도 {i}/{attempts} ({last}) - {min(wait, 60)}초 후")
+                if i < attempts:
+                    time.sleep(min(wait, 60))
+                continue
+            r.raise_for_status()
+            if not r.text.strip():
+                raise ValueError(f"빈 응답(HTTP {r.status_code})")
+            return r
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last = type(e).__name__
+            if i < attempts:
+                time.sleep(5)
+    raise RuntimeError(f"재시도 후에도 실패: {last}")
 
 
 def _translate_anthropic(payload: dict) -> dict:
@@ -328,7 +357,8 @@ def _translate_anthropic(payload: dict) -> dict:
 
 
 def _translate_github_models(payload: dict) -> dict:
-    r = requests.post(
+    r = _request_with_retry(
+        "POST",
         GH_MODELS_URL,
         headers={
             "Authorization": f"Bearer {env('GITHUB_TOKEN')}",
@@ -340,43 +370,75 @@ def _translate_github_models(payload: dict) -> dict:
             "model": env("GH_MODEL", GH_MODEL),
             "messages": [{"role": "user", "content": _llm_prompt(payload)}],
             "temperature": 0,
+            "response_format": {"type": "json_object"},
         },
         timeout=90,
     )
-    r.raise_for_status()
-    return _parse_json_object(r.json()["choices"][0]["message"]["content"])
+    try:
+        content = r.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError) as e:
+        raise ValueError(f"응답 형식 이상(HTTP {r.status_code}): {r.text[:150]!r}") from e
+    return _parse_json_object(content)
+
+
+GTX_URL = "https://translate.googleapis.com/translate_a/single"
+GTX_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
 
 def _gtx(text: str) -> str:
-    """Google 무료 번역 엔드포인트(키 불필요). 긴 글은 1,500자 단위로 나눠 호출."""
+    """Google 무료 번역 엔드포인트(키 불필요). 긴 글은 1,500자 단위로 나눠 호출, 429면 대기 후 재시도."""
+    # 줄바꿈은 항목 경계이므로 그대로 보존하고, 한 줄이 너무 길 때만 문장 단위로 쪼갠다.
+    pieces: list[str] = []
+    for line in text.split("\n"):
+        if len(line) <= 1500:
+            pieces.append(line)
+        else:
+            pieces.extend(p for p in re.split(r"(?<=[.!?])\s+", line) if p)
     chunks, cur = [], ""
-    for piece in re.split(r"(?<=[.!?\n])\s*", text):
-        if len(cur) + len(piece) > 1500 and cur:
+    for p in pieces:
+        if cur and len(cur) + len(p) + 1 > 1500:
             chunks.append(cur)
-            cur = ""
-        cur += piece + " "
-    if cur.strip():
-        chunks.append(cur.strip())
+            cur = p
+        else:
+            cur = f"{cur}\n{p}" if cur else p
+    if cur:
+        chunks.append(cur)
     out = []
     for c in chunks:
-        r = requests.get(
-            "https://translate.googleapis.com/translate_a/single",
+        r = _request_with_retry(
+            "GET",
+            GTX_URL,
             params={"client": "gtx", "sl": "ko", "tl": "en", "dt": "t", "q": c},
+            headers=GTX_HEADERS,
             timeout=30,
+            attempts=4,
         )
-        r.raise_for_status()
-        out.append("".join(seg[0] for seg in r.json()[0] if seg and seg[0]))
-    return " ".join(out).strip()
+        out.append("".join(seg[0] for seg in r.json()[0] if seg and seg[0]).strip("\n"))
+        time.sleep(1)
+    return "\n".join(out).strip()
 
 
 def _translate_google(payload: dict) -> dict:
-    def tr(v: str) -> str:
-        return _gtx(v) if re.search(r"[가-힣]", v or "") else v
-
+    """호출 수를 줄이려고 한글이 있는 값을 한 번에 묶어 번역하고, 줄 수가 어긋나면 개별 호출로 대체."""
+    keys = ["corp_name", "report_nm"] + [f"f:{k}" for k in payload["fields"]]
+    values = [payload["corp_name"], payload["report_nm"]] + list(payload["fields"].values())
+    idx = [i for i, v in enumerate(values) if re.search(r"[가-힣]", v or "")]
+    translated = list(values)
+    if idx:
+        joined = "\n".join(re.sub(r"\s*\n\s*", " ", values[i]) for i in idx)
+        lines = _gtx(joined).split("\n")
+        if len(lines) == len(idx):
+            for i, line in zip(idx, lines):
+                translated[i] = line.strip()
+        else:
+            print(f"      묶음 번역 줄 수 불일치({len(lines)}≠{len(idx)}) → 항목별 번역으로 전환")
+            for i in idx:
+                translated[i] = _gtx(values[i])
+    result = dict(zip(keys, translated))
     return {
-        "corp_name": tr(payload["corp_name"]),
-        "report_nm": tr(payload["report_nm"]),
-        "fields": {k: tr(v) for k, v in payload["fields"].items()},
+        "corp_name": result["corp_name"],
+        "report_nm": result["report_nm"],
+        "fields": {k: result[f"f:{k}"] for k in payload["fields"]},
     }
 
 
@@ -492,6 +554,13 @@ def render_html(items: list[Disclosure], run_time: datetime) -> str:
                         f"<tr><th>{esc(EN_LABELS[key])}</th><td>{esc(str(d.en['fields'][key]))}</td></tr>"
                     )
             parts.append("</table></div>")
+    en_failed = [d for d in items if d.summary and not d.en and env("TRANSLATE", "1") != "0"]
+    if en_failed:
+        names = ", ".join(d.corp_name for d in en_failed)
+        parts.append(
+            f"<div class='meta'>※ English translation unavailable for: {esc(names)}. "
+            "Please refer to the original DART filing (영문 번역을 생성하지 못했습니다).</div>"
+        )
     parts.append("</body></html>")
     return "".join(parts)
 
