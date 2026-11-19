@@ -329,9 +329,10 @@ def _request_with_retry(method: str, url: str, attempts: int = 3, **kwargs) -> r
                 if i < attempts:
                     time.sleep(min(wait, 60))
                 continue
-            r.raise_for_status()
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]!r}")
             if not r.text.strip():
-                raise ValueError(f"빈 응답(HTTP {r.status_code})")
+                raise ValueError(f"빈 응답(HTTP {r.status_code}, {r.headers.get('Content-Type', '')})")
             return r
         except (requests.ConnectionError, requests.Timeout) as e:
             last = type(e).__name__
@@ -445,6 +446,50 @@ def _translate_google(payload: dict) -> dict:
     }
 
 
+def _split_for_mymemory(text: str, limit: int = 450) -> list[str]:
+    """MyMemory는 요청당 500바이트 제한이라 문장 단위로 450자 이하로 쪼갠다."""
+    out: list[str] = []
+    for sent in re.split(r"(?<=[.!?])\s+|\n", text):
+        sent = sent.strip()
+        while len(sent) > limit:
+            cut = sent.rfind(" ", 0, limit)
+            cut = cut if cut > 0 else limit
+            out.append(sent[:cut])
+            sent = sent[cut:].strip()
+        if sent:
+            out.append(sent)
+    return out
+
+
+def _mymemory(text: str) -> str:
+    parts = []
+    for chunk in _split_for_mymemory(text):
+        r = _request_with_retry(
+            "GET",
+            "https://api.mymemory.translated.net/get",
+            params={"q": chunk, "langpair": "ko|en"},
+            timeout=30,
+        )
+        data = r.json()
+        out = (data.get("responseData") or {}).get("translatedText") or ""
+        if "MYMEMORY WARNING" in out.upper() or data.get("quotaFinished"):
+            raise RuntimeError("MyMemory 일일 무료 한도 소진")
+        parts.append(out)
+        time.sleep(0.5)
+    return " ".join(parts).strip()
+
+
+def _translate_mymemory(payload: dict) -> dict:
+    def tr(v: str) -> str:
+        return _mymemory(v) if re.search(r"[가-힣]", v or "") else v
+
+    return {
+        "corp_name": tr(payload["corp_name"]),
+        "report_nm": tr(payload["report_nm"]),
+        "fields": {k: tr(v) for k, v in payload["fields"].items()},
+    }
+
+
 def translate_disclosure(d: Disclosure) -> None:
     """공시 요약을 영문으로 번역해 d.en에 저장. 모두 실패하면 건너뛴다(한글 메일만 발송)."""
     if not d.summary:
@@ -460,6 +505,7 @@ def translate_disclosure(d: Disclosure) -> None:
     if env("GITHUB_TOKEN"):
         providers.append(("GitHub Models", _translate_github_models))
     providers.append(("Google 무료", _translate_google))
+    providers.append(("MyMemory 무료", _translate_mymemory))
     for name, fn in providers:
         try:
             data = fn(payload)

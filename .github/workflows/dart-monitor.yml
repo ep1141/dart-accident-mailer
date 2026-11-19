@@ -80,7 +80,7 @@ jobs:
           git pull -q --rebase --autostash || true
           if [ "${{ steps.run.outcome }}" = "success" ]; then git add state/sent.json || true; fi
           # 발송·번역 실패·오류가 있었던 실행만 로그를 남겨 커밋이 매시간 쌓이지 않게 함
-          if [ -f run.log ] && { [ "${{ steps.run.outcome }}" != "success" ] || grep -qE '메일 발송 완료|영문 번역 실패|Traceback|DART 접속 실패|발송할 신규 사고 없음' run.log; }; then
+          if [ -f run.log ] && { [ "${{ steps.run.outcome }}" != "success" ] || grep -qE '메일 발송 완료|영문 번역|Traceback|DART 접속 실패|발송할 신규 사고 없음' run.log; }; then
             mkdir -p logs && cp run.log logs/last_run.log
             git add logs/last_run.log
           fi
