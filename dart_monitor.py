@@ -446,6 +446,36 @@ def _translate_google(payload: dict) -> dict:
     }
 
 
+def report_name_en(report_nm: str) -> str | None:
+    """공시 보고서명은 번역기 대신 고정 규칙으로 영문화해 표현을 통일한다. 규칙에 안 맞으면 None."""
+    name = report_nm.strip()
+    prefix = "Correction: " if name.startswith("[기재정정]") else ""
+    name = re.sub(r"^\[[^\]]*\]", "", name).strip()
+    m = re.fullmatch(r"중대재해발생(?:\((.+?)\))?", name)
+    if m:
+        tail = {None: "", "종속회사의주요경영사항": " (Subsidiary)", "종속회사의 주요경영사항": " (Subsidiary)",
+                "자회사의 주요경영사항": " (Subsidiary)", "자회사의주요경영사항": " (Subsidiary)"}.get(m.group(1), "?")
+        if tail != "?":
+            return f"{prefix}Serious Accident Occurred{tail}"
+    if re.fullmatch(r"중대재해관련형사처벌사실확인(?:\(.+\))?", name):
+        return f"{prefix}Confirmation of Criminal Penalty Related to Serious Accident"
+    return None
+
+
+def _normalize_terms(text: str) -> str:
+    """번역기마다 달라지는 핵심 용어를 통일."""
+    def accident(m: re.Match) -> str:
+        word = "Serious" if m.group(1) == "S" else "serious"
+        return f"{word} accident{'s' if m.group(2) else ''}"
+
+    text = re.sub(
+        r"\b([Ss])erious (?:disaster|industrial accident|accident|calamity|calamities)(s?)\b", accident, text
+    )
+    text = re.sub(r"\[Correction (?:of entry|to account|of the entry|of report)\]\s*", "Correction: ", text)
+    text = re.sub(r"\[?(?:Corrected|Revised|Amended)\]?\s+", "Correction: ", text)
+    return text
+
+
 def _split_for_mymemory(text: str, limit: int = 450) -> list[str]:
     """MyMemory는 요청당 500바이트 제한이라 문장 단위로 450자 이하로 쪼갠다."""
     out: list[str] = []
@@ -494,15 +524,17 @@ def translate_disclosure(d: Disclosure) -> None:
     """공시 요약을 영문으로 번역해 d.en에 저장. 모두 실패하면 건너뛴다(한글 메일만 발송)."""
     if not d.summary:
         return
+    fixed_report = report_name_en(d.report_nm)  # 보고서명은 고정 규칙 우선(번역기 호출 절약 + 표현 통일)
     payload = {
         "corp_name": d.corp_name,
-        "report_nm": d.report_nm,
+        "report_nm": "" if fixed_report else d.report_nm,
         "fields": {k: v for k, v in d.summary.items() if k in EN_LABELS},
     }
     providers = []
     if env("ANTHROPIC_API_KEY"):
         providers.append(("Anthropic", _translate_anthropic))
-    if env("GITHUB_TOKEN"):
+    # GitHub Models는 'OK'만 반환하는 문제가 확인되어 기본 비활성. 필요하면 환경변수 GH_MODELS=1 로 켠다.
+    if env("GITHUB_TOKEN") and env("GH_MODELS") == "1":
         providers.append(("GitHub Models", _translate_github_models))
     providers.append(("Google 무료", _translate_google))
     providers.append(("MyMemory 무료", _translate_mymemory))
@@ -510,6 +542,8 @@ def translate_disclosure(d: Disclosure) -> None:
         try:
             data = fn(payload)
             if isinstance(data.get("fields"), dict) and data["fields"]:
+                data["report_nm"] = fixed_report or _normalize_terms(data.get("report_nm", "")) or d.report_nm
+                data["fields"] = {k: _normalize_terms(str(v)) for k, v in data["fields"].items()}
                 d.en = data
                 print(f"    영문 번역 완료({name}): {d.corp_name}")
                 return

@@ -29,8 +29,11 @@
 - 한글 카드 아래에 **영문 번역본**을 병기 (발생 장소·재해 내용·사망/부상자 수·조치사항 등 요약 항목).
   **추가 키·비용 없이** 동작하며, 아래 순서로 가능한 방식을 시도하고 모두 실패하면 영문 부분만 생략(한글 메일은 정상 발송)
   1. Anthropic API: `ANTHROPIC_API_KEY` 시크릿을 등록한 경우에만 (선택, 유료)
-  2. GitHub Models: Actions 기본 토큰으로 무료 사용 (일일 호출 한도 있음)
-  3. Google 무료 번역 엔드포인트: 키 불필요, 비공식이라 최후 수단
+  2. Google 무료 번역 엔드포인트: 키 불필요, 비공식이라 차단될 수 있음
+  3. MyMemory 무료 번역: 키 불필요, 일 약 5,000자 한도
+  - GitHub Models는 `OK`만 반환하는 문제가 확인되어 기본 비활성 (`GH_MODELS=1`로만 켬)
+  - 공시 제목은 번역기 대신 고정 규칙으로 영문화 (예: `Correction: Serious Accident Occurred (Subsidiary)`)
+  - 본문 번역의 "serious disaster/industrial accident" 등은 "serious accident"로, 정정 표기는 "Correction:"으로 통일
 - 공시 원문 표는 요약 추출에 실패한 경우에만 대신 표시
 - 정정공시(`[기재정정]`)와 중대재해 관련 형사처벌 확인 공시도 포함
 
