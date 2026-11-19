@@ -1,0 +1,30 @@
+[2026-11-19 15:20] 공시 조회 20261112~20261119, 키워드 ['중대재해']
+전체 공시 6279건
+키워드 일치 8건
+DRY_RUN: 발송 이력을 무시하고 조회된 전체 건으로 미리보기를 만듭니다.
+신규(미발송) 8건
+  - 20261112 LG생활건강 | 중대재해발생(종속회사의주요경영사항) | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261112800907
+  - 20261112 동화기업 | 중대재해관련형사처벌사실확인 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261112901176
+  - 20261113 동화기업 | [기재정정]중대재해관련형사처벌사실확인 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261113900166
+  - 20261117 태영건설 | 중대재해발생 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261117800505
+  - 20261117 티와이홀딩스 | 중대재해발생(자회사의 주요경영사항) | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261117800509
+  - 20261119 LG이노텍 | [기재정정]중대재해발생 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261119800078
+  - 20261119 LG전자 | [기재정정]중대재해발생(종속회사의주요경영사항) | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261119800168
+  - 20261119 HT로보틱스 | [기재정정]중대재해발생 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261119900158
+    (중복 병합) 티와이홀딩스 | 중대재해발생(자회사의 주요경영사항) -> 태영건설
+중복 병합 후 7건
+    ! 영문 번역 실패(GitHub Models, LG생활건강): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): LG생활건강
+    ! 영문 번역 실패(GitHub Models, 동화기업): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): 동화기업
+    ! 영문 번역 실패(GitHub Models, 동화기업): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): 동화기업
+    ! 영문 번역 실패(GitHub Models, 태영건설): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): 태영건설
+    ! 영문 번역 실패(GitHub Models, LG이노텍): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): LG이노텍
+    ! 영문 번역 실패(GitHub Models, LG전자): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): LG전자
+    ! 영문 번역 실패(GitHub Models, HT로보틱스): 응답 형식 이상(HTTP 200): 'OK\r\n'
+    영문 번역 완료(Google 무료): HT로보틱스
+DRY_RUN: 메일 미발송. 미리보기 out/preview.html 저장. 제목: [CSO 중대재해 공유] 11/19 LG생활건강, 동화기업, 태영건설, LG이노텍, LG전자, HT로보틱스
