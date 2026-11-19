@@ -56,6 +56,7 @@ jobs:
         if: steps.gate.outputs.go == '1'
 
       - name: 공시 확인 및 메일 발송
+        id: run
         if: steps.gate.outputs.go == '1'
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
@@ -67,15 +68,22 @@ jobs:
           KEYWORDS: ${{ vars.KEYWORDS || '중대재해' }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '3' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
-        run: python dart_monitor.py
+        run: |
+          set -o pipefail
+          python -u dart_monitor.py 2>&1 | tee run.log
 
-      - name: 발송 이력 및 미리보기 저장
-        if: steps.gate.outputs.go == '1' && success()
+      - name: 발송 이력, 미리보기, 실행 로그 저장
+        if: always() && steps.gate.outputs.go == '1'
         run: |
           git config user.name "dart-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
-          git pull -q --rebase || true
-          git add state/sent.json || true
+          git pull -q --rebase --autostash || true
+          if [ "${{ steps.run.outcome }}" = "success" ]; then git add state/sent.json || true; fi
+          # 발송·번역 실패·오류가 있었던 실행만 로그를 남겨 커밋이 매시간 쌓이지 않게 함
+          if [ -f run.log ] && { [ "${{ steps.run.outcome }}" != "success" ] || grep -qE '메일 발송 완료|영문 번역 실패|Traceback|DART 접속 실패|발송할 신규 사고 없음' run.log; }; then
+            mkdir -p logs && cp run.log logs/last_run.log
+            git add logs/last_run.log
+          fi
           if [ -f out/preview.html ]; then
             mkdir -p preview && cp out/preview.html preview/preview.html
             git add preview/preview.html

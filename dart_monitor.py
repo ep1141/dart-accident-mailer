@@ -100,6 +100,9 @@ class Disclosure:
             return None
         norm = re.sub(r"[\s\W_]+", "", content)[:80]
         date = re.sub(r"\D", "", self.summary.get("발생일자") or "")
+        # "-" 같은 의미 없는 내용이나 날짜 없는 짧은 내용은 서로 다른 사고가 같은 키로 묶일 수 있어 병합하지 않는다
+        if len(norm) < 10 or len(date) < 8:
+            return None
         return f"{'C' if self.is_correction else 'O'}|{date}|{norm}"
 
 
